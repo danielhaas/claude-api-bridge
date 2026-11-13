@@ -82,6 +82,29 @@ process.stdin.on('end', () => {
     return;
   }
 
+  const schema = arg('--json-schema');
+  if (schema) {
+    // Like the real CLI: free text plus a StructuredOutput tool call, the CLI's
+    // own tool_result turn, then a result carrying the validated JSON.
+    ev({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+    ev({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '```json chatter' } });
+    ev({ type: 'content_block_stop', index: 0 });
+    ev({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_so', name: 'StructuredOutput', input: {} } });
+    ev({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"rule_id":"R2"}' } });
+    ev({ type: 'content_block_stop', index: 1 });
+    ev({ type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 9 } });
+    ev({ type: 'message_stop' });
+    if (lastText.includes('NOSCHEMA')) {
+      emit({ type: 'result', subtype: 'success', is_error: false, result: '', usage });
+    } else {
+      emit({
+        type: 'result', subtype: 'success', is_error: false, result: '', usage: { ...usage, output_tokens: 9 },
+        structured_output: { rule_id: 'R2', schema: JSON.parse(schema) },
+      });
+    }
+    process.exit(0);
+  }
+
   const echo = 'ECHO ' + JSON.stringify({ system, model, content, mcp: Boolean(arg('--mcp-config')), allowed: argList('--allowedTools') });
   ev({ type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } });
   ev({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'hmm' } });

@@ -164,6 +164,58 @@ describe('POST /v1/messages', () => {
   });
 });
 
+describe('structured output', () => {
+  const schema = { type: 'object', properties: { rule_id: { type: 'string' } }, required: ['rule_id'] };
+
+  for (const [label, extra] of [
+    ['output_config.format (GA)', { output_config: { format: { type: 'json_schema', schema } } }],
+    ['output_format (beta)', { output_format: { type: 'json_schema', schema } }],
+  ]) {
+    it(`returns only the validated JSON as text — ${label}`, async () => {
+      const r = await s.post('/v1/messages', { ...extra, messages: [user('pick')] }, { 'anthropic-beta': 'structured-outputs-2025-11-13' });
+      assert.equal(r.status, 200);
+      const msg = await r.json();
+      assert.equal(msg.stop_reason, 'end_turn');
+      assert.equal(msg.content.length, 1);
+      assert.equal(msg.content[0].type, 'text');
+      const parsed = JSON.parse(msg.content[0].text);
+      assert.equal(parsed.rule_id, 'R2');
+      assert.deepEqual(parsed.schema, schema, 'schema must reach the CLI unchanged');
+    });
+  }
+
+  it('streams the JSON as one text block', async () => {
+    const r = await s.post('/v1/messages', { stream: true, output_format: { type: 'json_schema', schema }, messages: [user('pick')] });
+    const events = parseSSE(await r.text());
+    assert.deepEqual(events.map((e) => e.event), [
+      'message_start', 'content_block_start', 'content_block_delta', 'content_block_stop', 'message_delta', 'message_stop',
+    ]);
+    assert.equal(JSON.parse(events[2].data.delta.text).rule_id, 'R2');
+    assert.equal(events[4].data.delta.stop_reason, 'end_turn');
+  });
+
+  it('passes a client tool call through instead', async () => {
+    const r = await s.post('/v1/messages', {
+      output_format: { type: 'json_schema', schema },
+      tools: [{ name: 'get_weather', input_schema: { type: 'object' } }],
+      messages: [user('TOOL')],
+    });
+    const msg = await r.json();
+    assert.equal(msg.stop_reason, 'tool_use');
+    assert.equal(msg.content.find((b) => b.type === 'tool_use').name, 'get_weather');
+  });
+
+  it('errors if the CLI returns no structured output', async () => {
+    const r = await s.post('/v1/messages', { output_format: { type: 'json_schema', schema }, messages: [user('NOSCHEMA')] });
+    assert.equal(r.status, 500);
+  });
+
+  it('rejects unsupported formats', async () => {
+    const r = await s.post('/v1/messages', { output_format: { type: 'xml' }, messages: [user('x')] });
+    assert.equal(r.status, 400);
+  });
+});
+
 describe('POST /v1/messages/count_tokens', () => {
   it('returns an estimate', async () => {
     const r = await s.post('/v1/messages/count_tokens', { messages: [user('x'.repeat(400))] });

@@ -120,6 +120,18 @@ describe('POST /v1/chat/completions', () => {
     assert.equal(chunks.find((c) => c.choices[0]?.finish_reason).choices[0].finish_reason, 'tool_calls');
   });
 
+  it('honours response_format json_schema and json_object', async () => {
+    const schema = { type: 'object', properties: { rule_id: { type: 'string' } } };
+    let r = await post({ response_format: { type: 'json_schema', json_schema: { name: 'pick', schema } }, messages: [{ role: 'user', content: 'pick' }] });
+    let body = await r.json();
+    assert.equal(body.choices[0].finish_reason, 'stop');
+    assert.deepEqual(JSON.parse(body.choices[0].message.content).schema, schema);
+
+    r = await post({ response_format: { type: 'json_object' }, messages: [{ role: 'user', content: 'pick' }] });
+    body = await r.json();
+    assert.deepEqual(JSON.parse(body.choices[0].message.content).schema, { type: 'object' });
+  });
+
   it('maps errors to OpenAI shape', async () => {
     let r = await post({ model: 'bogus', messages: [{ role: 'user', content: 'hi' }] });
     assert.equal(r.status, 404);

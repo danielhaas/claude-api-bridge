@@ -131,6 +131,19 @@ function blockToText(block) {
   }
 }
 
+/**
+ * JSON schema for structured output, or null. Accepts the GA form
+ * (output_config.format) and the beta form (output_format).
+ */
+function outputSchema(body) {
+  const format = (body.output_config && body.output_config.format) || body.output_format;
+  if (!format) return null;
+  if (format.type !== 'json_schema' || !format.schema || typeof format.schema !== 'object' || Array.isArray(format.schema)) {
+    throw new ApiError(400, 'invalid_request_error', 'output format: only {"type": "json_schema", "schema": {...}} is supported');
+  }
+  return format.schema;
+}
+
 /** Client tools that will actually be offered to the model ([] if none or tool_choice none). */
 function activeTools(body) {
   if (!Array.isArray(body.tools) || body.tools.length === 0) return [];
@@ -161,6 +174,7 @@ function validate(body) {
     throw new ApiError(400, 'invalid_request_error', 'model: invalid model name');
   }
   systemText(body.system); // throws on bad shape
+  outputSchema(body); // throws on bad shape
 
   if (tools !== undefined) {
     if (!Array.isArray(tools)) throw new ApiError(400, 'invalid_request_error', 'tools: must be an array');
@@ -298,10 +312,17 @@ function run(body, onEvent) {
     '--setting-sources', '',
     '--disable-slash-commands',
     '--no-session-persistence',
-    '--max-turns', '1',
     '--system-prompt-file', sysFile,
   ];
   if (body.model) args.push('--model', body.model);
+
+  // Structured output: the CLI makes the model call an internal
+  // StructuredOutput tool, validates the input against the schema and asks
+  // again if it doesn't match, so it needs a few turns. The validated JSON
+  // arrives as result.structured_output.
+  const schema = outputSchema(body);
+  if (schema) args.push('--json-schema', JSON.stringify(schema), '--max-turns', '4');
+  else args.push('--max-turns', '1');
 
   const tools = activeTools(body);
   if (tools.length) {
@@ -329,6 +350,45 @@ function run(body, onEvent) {
     child.kill('SIGTERM');
   };
 
+  // Structured-output mode: hold back each message's events. A message that
+  // calls a client tool is passed through (the caller must run the tool);
+  // anything else is dropped, and the validated JSON is sent at the end.
+  let firstStart = null;
+  let held = [];
+  let heldHasClientTool = false;
+  const handleSchemaEvent = (event) => {
+    if (event.type === 'message_start') {
+      if (!firstStart) firstStart = event;
+      held = [];
+      heldHasClientTool = false;
+    }
+    held.push(event);
+    if (event.type === 'content_block_start' && event.content_block && event.content_block.type === 'tool_use'
+      && String(event.content_block.name).startsWith(MCP_PREFIX)) {
+      heldHasClientTool = true;
+    }
+    if (event.type === 'message_stop' && heldHasClientTool) {
+      held.forEach(onEvent);
+      stop('complete');
+    }
+  };
+  const emitStructured = (result) => {
+    const start = firstStart ? firstStart.message : {
+      id: `msg_${crypto.randomBytes(12).toString('hex')}`, type: 'message', role: 'assistant',
+      model: body.model || 'unknown', stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 },
+    };
+    onEvent({ type: 'message_start', message: { ...start, content: [], stop_reason: null } });
+    onEvent({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+    onEvent({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: JSON.stringify(result.structured_output) } });
+    onEvent({ type: 'content_block_stop', index: 0 });
+    onEvent({
+      type: 'message_delta',
+      delta: { stop_reason: 'end_turn', stop_sequence: null },
+      usage: { output_tokens: (result.usage && result.usage.output_tokens) || 0 },
+    });
+    onEvent({ type: 'message_stop' });
+  };
+
   const done = new Promise((resolve, reject) => {
     let buf = '';
     let stderr = '';
@@ -351,10 +411,14 @@ function run(body, onEvent) {
         try { msg = JSON.parse(line); } catch { continue; }
 
         if (msg.type === 'stream_event' && !msg.parent_tool_use_id) {
-          onEvent(msg.event);
-          // One message is all we want. Stopping here also keeps the CLI from
-          // running a client tool itself.
-          if (msg.event.type === 'message_stop') stop('complete');
+          if (schema) {
+            handleSchemaEvent(msg.event);
+          } else {
+            onEvent(msg.event);
+            // One message is all we want. Stopping here also keeps the CLI from
+            // running a client tool itself.
+            if (msg.event.type === 'message_stop') stop('complete');
+          }
         } else if (msg.type === 'result') {
           result = msg;
         }
@@ -378,6 +442,12 @@ function run(body, onEvent) {
       if (result && result.is_error) return reject(cliErrorFromResult(result, body.model));
       if (code !== 0) {
         return reject(new ApiError(500, 'api_error', `Claude CLI exited with code ${code}: ${stderr.trim().slice(0, 500)}`));
+      }
+      if (schema) {
+        if (!result || result.structured_output === undefined) {
+          return reject(new ApiError(500, 'api_error', 'The model did not produce output matching the schema'));
+        }
+        emitStructured(result);
       }
       resolve(result);
     });

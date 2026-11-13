@@ -273,6 +273,12 @@ gives your tools to the CLI through a small built-in MCP server, so the model
 makes real, schema-checked tool calls. The CLI is stopped before it would run
 a tool itself.
 
+**Structured output** works too: send `output_config.format` (or the beta
+`output_format`) as `{"type": "json_schema", "schema": {...}}`. The bridge
+passes the schema to the CLI's `--json-schema`. The CLI checks the model's
+answer against it and asks again if it doesn't match. You get the checked JSON
+back as a single text block, with no code fences and no extra text.
+
 Because it runs through the CLI:
 
 - **Earlier turns** are sent as a text transcript ahead of the last user
@@ -295,7 +301,8 @@ Because it runs through the CLI:
 OpenAI-compatible, for tools and libraries built for OpenAI. Requests are
 translated to the Messages format, so the notes above apply as well.
 `system`/`developer` messages, image parts (data URLs or links),
-`tools`/`tool_calls`/`tool` messages, `tool_choice`, and `stream` with
+`tools`/`tool_calls`/`tool` messages, `tool_choice`, `response_format`
+(`json_schema` and `json_object`), and `stream` with
 `stream_options.include_usage` are all supported. `n` must be 1.
 
 ```python

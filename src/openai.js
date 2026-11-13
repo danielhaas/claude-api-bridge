@@ -146,6 +146,17 @@ function toAnthropic(req) {
   else if (tc && typeof tc === 'object' && tc.function) body.tool_choice = { type: 'tool', name: tc.function.name };
   else if (tc !== undefined && tc !== null) throw bad('tool_choice: unsupported value');
 
+  const rf = req.response_format;
+  if (rf && rf.type === 'json_schema') {
+    const schema = rf.json_schema && rf.json_schema.schema;
+    if (!schema || typeof schema !== 'object') throw bad('response_format.json_schema.schema is required');
+    body.output_config = { format: { type: 'json_schema', schema } };
+  } else if (rf && rf.type === 'json_object') {
+    body.output_config = { format: { type: 'json_schema', schema: { type: 'object' } } };
+  } else if (rf && rf.type !== 'text') {
+    throw bad(`response_format.type: unsupported value "${rf.type}"`);
+  }
+
   return body;
 }
 
