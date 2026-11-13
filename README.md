@@ -230,6 +230,7 @@ done
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
+| `POST` | `/v1/messages` | Token | Anthropic Messages API compatible (sync + streaming) |
 | `POST` | `/api/ask` | Token | Send a message to Claude Code |
 | `GET` | `/api/ask/:requestId` | Token | Poll for response |
 | `POST` | `/api/tokens` | Admin | Create a new API token |
@@ -237,6 +238,39 @@ done
 | `DELETE` | `/api/tokens/:id` | Admin | Revoke a token |
 | `GET` | `/api/status` | — | Server status & stats |
 | `GET` | `/dashboard` | — | Web dashboard |
+
+### POST /v1/messages
+
+A drop-in for the Anthropic Messages API, so the official SDKs and other
+Anthropic-compatible clients work against the bridge. It answers directly, so
+there's no polling, and `"stream": true` returns standard server-sent events.
+Pass a bridge token as `x-api-key` (or `Authorization: Bearer`).
+
+```python
+import anthropic
+
+client = anthropic.Anthropic(api_key="cab-...", base_url="http://localhost:3456")
+msg = client.messages.create(
+    model="claude-sonnet-5-5",   # full model IDs or CLI aliases like "haiku"
+    max_tokens=1024,
+    system="You are terse.",
+    messages=[{"role": "user", "content": "Hello"}],
+)
+print(msg.content[0].text)
+```
+
+Each request runs one `claude -p` turn with all Claude Code tools turned off,
+so it behaves like a plain model call. Because it runs through the CLI:
+
+- **Earlier turns** are sent as a text transcript ahead of the last user
+  message. Images and documents work only in the last user message.
+- **Not supported:** client `tools` and assistant prefill (both return `400`).
+- **Ignored:** `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences`.
+- **Thinking blocks** are removed unless the request sets `thinking`.
+- **Concurrency:** 2 requests run at once by default (`CAB_MAX_CONCURRENT`),
+  up to 20 more wait, and anything beyond that gets `529 overloaded_error`.
+- **Account context:** Claude Code adds your account email to the context, so a
+  client could get the model to repeat it.
 
 ### POST /api/ask
 

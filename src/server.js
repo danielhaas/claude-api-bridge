@@ -3,6 +3,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const routes = require('./routes');
+const messages = require('./messages');
 const dashboard = require('./dashboard');
 const tunnel = require('./tunnel');
 const db = require('./db');
@@ -29,6 +30,8 @@ async function start(port, options = {}) {
     allowedHeaders: ['Content-Type', 'Authorization'],
   }));
 
+  // /v1/messages bodies can carry whole conversations and base64 images.
+  app.use('/v1', express.json({ limit: '20mb' }));
   app.use(express.json({ limit: '64kb' }));
 
   // Global rate limit
@@ -42,6 +45,7 @@ async function start(port, options = {}) {
 
   // ── Routes ──
 
+  app.use(messages);
   app.use(routes);
   app.use(dashboard);
 
@@ -52,6 +56,7 @@ async function start(port, options = {}) {
       version: require('../package.json').version,
       description: 'Turn your Claude Code subscription into a REST API',
       endpoints: {
+        'POST /v1/messages': 'Anthropic Messages API compatible endpoint',
         'POST /api/ask': 'Send a message to Claude',
         'GET /api/ask/:requestId': 'Poll for response',
         'POST /api/tokens': 'Create API token (admin)',
