@@ -230,7 +230,11 @@ done
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `POST` | `/v1/messages` | Token | Anthropic Messages API compatible (sync + streaming) |
+| `POST` | `/v1/messages` | Token | Anthropic Messages API compatible (sync + streaming, tools) |
+| `POST` | `/v1/messages/count_tokens` | Token | Estimated input token count |
+| `POST` | `/v1/chat/completions` | Token | OpenAI Chat Completions compatible (sync + streaming, tools) |
+| `GET` | `/v1/models` | Token | List models (works for Anthropic and OpenAI clients) |
+| `GET` | `/v1/models/:id` | Token | Get one model |
 | `POST` | `/api/ask` | Token | Send a message to Claude Code |
 | `GET` | `/api/ask/:requestId` | Token | Poll for response |
 | `POST` | `/api/tokens` | Admin | Create a new API token |
@@ -260,17 +264,56 @@ print(msg.content[0].text)
 ```
 
 Each request runs one `claude -p` turn with all Claude Code tools turned off,
-so it behaves like a plain model call. Because it runs through the CLI:
+so it behaves like a plain model call.
+
+**Function calling** works as in the real API: send `tools` (and optionally
+`tool_choice`), get back `tool_use` blocks with `stop_reason: "tool_use"`, run
+the tool yourself, and send the `tool_result` in the next request. The bridge
+gives your tools to the CLI through a small built-in MCP server, so the model
+makes real, schema-checked tool calls. The CLI is stopped before it would run
+a tool itself.
+
+Because it runs through the CLI:
 
 - **Earlier turns** are sent as a text transcript ahead of the last user
   message. Images and documents work only in the last user message.
-- **Not supported:** client `tools` and assistant prefill (both return `400`).
+- **Not supported:** assistant prefill and server tools such as web search
+  (both return `400`).
+- **`tool_choice`:** `any` and `tool` are requested through the system prompt,
+  because the CLI can't force a tool call. The model almost always follows it,
+  but it isn't guaranteed.
 - **Ignored:** `max_tokens`, `temperature`, `top_p`, `top_k`, `stop_sequences`.
 - **Thinking blocks** are removed unless the request sets `thinking`.
+- **`count_tokens`** is an estimate (about 4 characters per token), not an exact count.
 - **Concurrency:** 2 requests run at once by default (`CAB_MAX_CONCURRENT`),
   up to 20 more wait, and anything beyond that gets `529 overloaded_error`.
 - **Account context:** Claude Code adds your account email to the context, so a
   client could get the model to repeat it.
+
+### POST /v1/chat/completions
+
+OpenAI-compatible, for tools and libraries built for OpenAI. Requests are
+translated to the Messages format, so the notes above apply as well.
+`system`/`developer` messages, image parts (data URLs or links),
+`tools`/`tool_calls`/`tool` messages, `tool_choice`, and `stream` with
+`stream_options.include_usage` are all supported. `n` must be 1.
+
+```python
+from openai import OpenAI
+
+client = OpenAI(api_key="cab-...", base_url="http://localhost:3456/v1")
+r = client.chat.completions.create(
+    model="claude-sonnet-5-5",
+    messages=[{"role": "user", "content": "Hello"}],
+)
+print(r.choices[0].message.content)
+```
+
+### GET /v1/models
+
+A fixed list (the CLI can't list models). Each entry has the fields both
+Anthropic and OpenAI clients expect. Override it with
+`CAB_MODELS=claude-opus-5-5,claude-haiku-5-5`.
 
 ### POST /api/ask
 
@@ -354,6 +397,25 @@ Other commands:
   --help, -h         Show help
 ```
 
+Environment variables:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PORT` | `3456` | Server port (`--port` wins) |
+| `CAB_DATA_DIR` | `~/.claude-api-bridge` | Database location |
+| `CAB_WORKSPACE` | `~/claude-api-bridge-workspace` | Working directory for CLI runs |
+| `CAB_MAX_CONCURRENT` | `2` | Parallel `/v1/*` requests |
+| `CAB_MODELS` | built-in list | Models returned by `/v1/models` |
+| `CAB_CLAUDE_BIN` | auto-detected | Path to the `claude` binary |
+
+## Development
+
+```bash
+npm install
+npm test        # runs against a fake claude CLI — no subscription usage
+npm run dev     # local server, no tunnel
+```
+
 ## Security
 
 | Measure | Details |
@@ -374,7 +436,7 @@ Other commands:
 | Limitation | Details |
 |------------|---------|
 | **Desktop must be running** | Claude CLI executes on your machine — it must be on |
-| **Sequential processing** | One request at a time (Claude CLI is single-threaded) |
+| **Sequential processing** | `/api/ask` handles one request at a time; `/v1/*` runs `CAB_MAX_CONCURRENT` (default 2) in parallel |
 | **URL changes on restart** | Free Cloudflare Tunnel assigns a new URL each time. Use a [Cloudflare account](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) for a persistent domain |
 | **Response time** | Depends on Claude CLI speed (typically 10s–2min) |
 | **Subscription required** | You need an active Claude Code Max subscription |

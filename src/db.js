@@ -65,6 +65,14 @@ function getDb() {
     CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token_id);
   `);
 
+  // ── Migrations ──
+
+  // 'ask' = queued /api/ask jobs; 'v1' = synchronous /v1/* calls (logged only, never queued).
+  const cols = db.prepare('PRAGMA table_info(requests)').all().map((c) => c.name);
+  if (!cols.includes('source')) {
+    db.exec("ALTER TABLE requests ADD COLUMN source TEXT NOT NULL DEFAULT 'ask'");
+  }
+
   return db;
 }
 
@@ -138,11 +146,29 @@ function updateRequest(id, { status, response = null, error = null }) {
 }
 
 function getQueuedRequests() {
-  return getDb().prepare("SELECT * FROM requests WHERE status = 'queued' ORDER BY created_at ASC").all();
+  return getDb().prepare("SELECT * FROM requests WHERE status = 'queued' AND source = 'ask' ORDER BY created_at ASC").all();
 }
 
 function getQueueLength() {
-  return getDb().prepare("SELECT COUNT(*) as count FROM requests WHERE status IN ('queued', 'processing')").get().count;
+  return getDb().prepare("SELECT COUNT(*) as count FROM requests WHERE status IN ('queued', 'processing') AND source = 'ask'").get().count;
+}
+
+/** Log a synchronous /v1 call as it starts. */
+function logV1Start({ id, tokenId, message }) {
+  getDb().prepare(`
+    INSERT INTO requests (id, token_id, message, status, source)
+    VALUES (?, ?, ?, 'processing', 'v1')
+  `).run(id, tokenId, message);
+}
+
+/** On startup: re-queue interrupted /api/ask jobs; mark interrupted /v1 calls as failed. */
+function recoverInterruptedRequests() {
+  const d = getDb();
+  d.prepare("UPDATE requests SET status = 'queued' WHERE status = 'processing' AND source = 'ask'").run();
+  d.prepare(`
+    UPDATE requests SET status = 'error', error = 'Interrupted by server restart', completed_at = unixepoch()
+    WHERE status = 'processing' AND source = 'v1'
+  `).run();
 }
 
 // ── Session operations ──
@@ -197,6 +223,8 @@ module.exports = {
   updateRequest,
   getQueuedRequests,
   getQueueLength,
+  logV1Start,
+  recoverInterruptedRequests,
   getOrCreateSession,
   updateSessionClaudeId,
   getStats,

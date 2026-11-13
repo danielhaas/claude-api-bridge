@@ -4,12 +4,15 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const routes = require('./routes');
 const messages = require('./messages');
+const models = require('./models');
+const openai = require('./openai');
 const dashboard = require('./dashboard');
 const tunnel = require('./tunnel');
 const db = require('./db');
 const auth = require('./auth');
 
-async function start(port, options = {}) {
+/** Build the Express app (no listening, tunnel or signal handlers — tests use this directly). */
+function createApp() {
   const app = express();
 
   // ── Middleware ──
@@ -45,7 +48,9 @@ async function start(port, options = {}) {
 
   // ── Routes ──
 
-  app.use(messages);
+  app.use(messages.router);
+  app.use(models.router);
+  app.use(openai.router);
   app.use(routes);
   app.use(dashboard);
 
@@ -57,6 +62,9 @@ async function start(port, options = {}) {
       description: 'Turn your Claude Code subscription into a REST API',
       endpoints: {
         'POST /v1/messages': 'Anthropic Messages API compatible endpoint',
+        'POST /v1/messages/count_tokens': 'Estimated input token count',
+        'GET /v1/models': 'List models (Anthropic and OpenAI shapes)',
+        'POST /v1/chat/completions': 'OpenAI Chat Completions compatible endpoint',
         'POST /api/ask': 'Send a message to Claude',
         'GET /api/ask/:requestId': 'Poll for response',
         'POST /api/tokens': 'Create API token (admin)',
@@ -79,6 +87,12 @@ async function start(port, options = {}) {
     console.error('Server error:', err);
     res.status(500).json({ error: 'Internal server error' });
   });
+
+  return app;
+}
+
+async function start(port, options = {}) {
+  const app = createApp();
 
   // ── Start listening ──
 
@@ -108,7 +122,7 @@ async function start(port, options = {}) {
 
   // ── Recover stuck requests from previous crash ──
 
-  db.getDb().prepare("UPDATE requests SET status = 'queued' WHERE status = 'processing'").run();
+  db.recoverInterruptedRequests();
 
   // ── Start Cloudflare Tunnel ──
 
@@ -158,4 +172,4 @@ async function start(port, options = {}) {
   return server;
 }
 
-module.exports = { start };
+module.exports = { start, createApp };

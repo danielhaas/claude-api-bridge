@@ -2,13 +2,15 @@ const { spawn, execFileSync } = require('child_process');
 const path = require('path');
 const os = require('os');
 
-const DEFAULT_WORKING_DIR = path.join(os.homedir(), 'claude-api-bridge-workspace');
+const DEFAULT_WORKING_DIR = process.env.CAB_WORKSPACE || path.join(os.homedir(), 'claude-api-bridge-workspace');
 const MAX_MESSAGE_SIZE = 32 * 1024; // 32KB
 const MAX_OUTPUT_SIZE = 10 * 1024 * 1024; // 10MB
 const EXECUTION_TIMEOUT = 300000; // 5 minutes
 
 // Find claude CLI binary
 function findClaudeBinary() {
+  if (process.env.CAB_CLAUDE_BIN) return process.env.CAB_CLAUDE_BIN;
+
   const candidates = [
     'claude',
     '/usr/local/bin/claude',
