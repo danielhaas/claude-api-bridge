@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 
 const VERSION = require('../package.json').version;
-const DATA_DIR = path.join(os.homedir(), '.claude-api-bridge');
+const DATA_DIR = process.env.CAB_DATA_DIR || path.join(os.homedir(), '.claude-api-bridge');
 
 // ── Helpers ──────────────────────────────────────────────
 
