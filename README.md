@@ -66,9 +66,11 @@ npm run dev        # local only: http://localhost:3456
 Or install it as a global command straight from GitHub:
 
 ```bash
-npm install -g github:danielhaas/claude-api-bridge
+sudo npm install -g github:danielhaas/claude-api-bridge   # leave out sudo if your npm global folder is yours
 claude-api-bridge start --no-tunnel
 ```
+
+To keep it running in the background and start it at boot, see [Run as a Service](#run-as-a-service).
 
 On the first start the bridge prints an **admin token**. It's shown only once, so save it:
 
@@ -339,35 +341,107 @@ The raw token is returned once. Only its hash is stored.
 
 ## Run as a Service
 
-To keep the bridge running across logouts and reboots on Linux, use a systemd **user** service (it runs as you, so it uses your Claude Code login):
+On Linux you can run the bridge as a systemd **user** service, so it starts at boot and restarts if it crashes. It must be a *user* service, not a system one: it runs as you, so Claude Code uses your login (`~/.claude`). Run every command below as your normal user. Only step 2 needs `sudo`.
 
-```ini
-# ~/.config/systemd/user/claude-api-bridge.service
+### 1. Check Claude Code works
+
+```bash
+claude --version     # must print a version
+claude -p "say hi"   # must answer; if not, run `claude` once and log in
+```
+
+### 2. Install the bridge
+
+```bash
+sudo npm install -g github:danielhaas/claude-api-bridge
+claude-api-bridge --version     # 0.2.0 or later
+```
+
+If your npm global folder belongs to your user (for example with nvm), leave out `sudo`. To run from a checkout instead, see [Running from a checkout](#running-from-a-checkout) below.
+
+### 3. Create the service
+
+This writes the unit file with the right paths for `node`, `claude` and the bridge already filled in:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/claude-api-bridge.service <<EOF
 [Unit]
 Description=claude-api-bridge
 After=network-online.target
 
 [Service]
-WorkingDirectory=/path/to/claude-api-bridge
-ExecStart=/usr/bin/node /path/to/claude-api-bridge/bin/cli.js start --no-tunnel --port 3456
-# systemd's default PATH usually lacks ~/.local/bin, where `claude` lives
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=$(command -v claude-api-bridge) start --no-tunnel --port 3456
+# systemd's default PATH lacks most user folders; both node and claude must be found
+Environment=PATH=$(dirname "$(command -v node)"):$(dirname "$(command -v claude)"):/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=5
 
 [Install]
 WantedBy=default.target
+EOF
+cat ~/.config/systemd/user/claude-api-bridge.service   # check the paths look right
 ```
+
+### 4. Start it and keep it running
 
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now claude-api-bridge
-loginctl enable-linger "$USER"                 # keep it running when you're logged out
-journalctl --user -u claude-api-bridge -f      # logs (the admin token appears here on first start)
-systemctl --user restart claude-api-bridge     # after updating the code
+sudo loginctl enable-linger "$USER"     # keep running while you're logged out, and start at boot
 ```
 
-`--no-tunnel` is recommended for a service: the free Cloudflare URL changes on every restart. To reach the bridge from another machine, use an SSH tunnel (`ssh -L 3456:localhost:3456 your-host`) or a VPN.
+Without linger, user services stop when you log out and only start when you log in.
+
+### 5. Get the admin token and create an API token
+
+On the very first start the bridge prints an admin token, **once**, into the log:
+
+```bash
+journalctl --user -u claude-api-bridge | grep -A2 "Admin Token"
+```
+
+If nothing shows up, the database already has an admin token from an earlier run, which is still valid. Then create a token for your app (see [Your First API Call](#your-first-api-call)) and check the bridge is up:
+
+```bash
+curl -s http://localhost:3456/api/status
+```
+
+### Managing it
+
+```bash
+systemctl --user status claude-api-bridge       # is it running?
+journalctl --user -u claude-api-bridge -f       # live logs (one line per request)
+systemctl --user restart claude-api-bridge      # restart
+systemctl --user disable --now claude-api-bridge   # stop and don't start at boot
+```
+
+**To update:** reinstall, then restart:
+
+```bash
+sudo npm install -g github:danielhaas/claude-api-bridge
+systemctl --user restart claude-api-bridge
+```
+
+Tokens and request history are kept, because they live in `~/.claude-api-bridge/`, not in the install.
+
+**To uninstall:** `systemctl --user disable --now claude-api-bridge`, delete `~/.config/systemd/user/claude-api-bridge.service`, then run `sudo npm uninstall -g claude-api-bridge`. Delete `~/.claude-api-bridge/` too if you want to remove the tokens and history.
+
+### Running from a checkout
+
+To run your own working copy instead (for development), point the service at it. Use a full path to `node`, and restart after each code change:
+
+```ini
+WorkingDirectory=/path/to/claude-api-bridge
+ExecStart=/usr/bin/node /path/to/claude-api-bridge/bin/cli.js start --no-tunnel --port 3456
+```
+
+### Remote access and troubleshooting
+
+- **Remote access:** `--no-tunnel` is recommended for a service, because the free Cloudflare URL changes on every restart. To reach the bridge from another machine, use an SSH tunnel (`ssh -L 3456:localhost:3456 your-host`) or a VPN. If you remove `--no-tunnel`, the current public URL appears in `journalctl`.
+- **"Claude Code CLI not found"** in the log: the service's `PATH` doesn't include the folder with `claude` (`command -v claude` shows it). Fix `Environment=PATH=`, then run `systemctl --user daemon-reload && systemctl --user restart claude-api-bridge`.
+- **`EADDRINUSE`:** something else is already using port 3456, often a bridge you started by hand. Stop it, or change `--port`.
+- **Requests fail with authentication errors:** Claude Code isn't logged in for this user. Run `claude` once in a terminal and log in.
 
 ## CLI Options
 
